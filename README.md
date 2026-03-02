@@ -41,7 +41,7 @@ The split was performed at the artist level with raga coverage ensured during as
 
 - Split type: Artist-independent  
 - Splits: Training / Validation / Test  
-- Track distribution: approximately balanced (82 / 76 / 77 tracks)  
+- Track distribution: approximately balanced (80 / 77 / 78 tracks)  
 - Artist overlap across splits: none  
 
 ### Dataset Freeze
