@@ -5,7 +5,7 @@
 # =========================
 CSV_PATH = "data/metadata/raga_20_dataset_frozen.csv"
 SAMPLE_RATE = 22050
-CLIP_DURATION = 10  # (seconds)
+CLIP_DURATION = 30  # (seconds)
 NUM_CLASSES = 20
 
 # =========================

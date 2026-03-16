@@ -1,0 +1,26 @@
+{
+  "accuracy": 0.012821,
+  "macro_f1": 0.00277,
+  "per_class_f1": {
+    "Bhairavi": 0.0,
+    "Bilahari": 0.0,
+    "B\u0113ga\u1e0da": 0.0,
+    "Dhany\u0101si": 0.0,
+    "Harik\u0101mbh\u014dji": 0.0,
+    "Kaly\u0101\u1e47i": 0.0,
+    "Karaharapriya": 0.052632,
+    "K\u0101mavardani": 0.0,
+    "K\u0101pi": 0.0,
+    "K\u0101\u1e41bh\u014dji": 0.0,
+    "Madhyam\u0101vati": 0.0,
+    "M\u0101y\u0101m\u0101\u1e37avagau\u1e37a": 0.0,
+    "M\u014dhana\u1e41": 0.0,
+    "N\u0101\u1e6dakurinji": 0.0,
+    "R\u012btigau\u1e37a": 0.0,
+    "Sah\u0101n\u0101": 0.0,
+    "T\u014d\u1e0di": 0.0,
+    "\u0100nandabhairavi": 0.0,
+    "\u015aankar\u0101bhara\u1e47a\u1e41": 0.0,
+    "\u1e62anmukhapriya": 0.0
+  }
+}

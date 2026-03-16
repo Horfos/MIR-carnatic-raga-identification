@@ -1,8 +1,9 @@
 """
 evaluate.py — Carnatic Raga CNN Classifier
 ===========================================
-Mirrors the dataset behaviour in train.py exactly — log-mel spectrograms are
-computed on first access and cached in memory.
+Mirrors the dataset behaviour in train.py exactly.
+Each test audio file is split into 30-second chunks in memory.
+Final prediction per file is the majority vote across all its chunks.
 
 Outputs
 -------
@@ -17,6 +18,7 @@ Usage:
 import os
 import sys
 import json
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -39,7 +41,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import config
 from env_config import AUDIO_ROOT
-from src.features import extract_logmel
+from src.features import load_audio, compute_logmel, pad_or_crop_logmel
 from src.models import BaselineCNN
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -51,49 +53,86 @@ CONFUSION_FILE = os.path.join(RESULTS_DIR, "baseline_confusion.png")
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# ── clip config ───────────────────────────────────────────────────────────────
+CLIP_SAMPLES = config.SAMPLE_RATE * config.CLIP_DURATION
+FIXED_FRAMES = int(config.CLIP_DURATION * config.SAMPLE_RATE / config.HOP_LENGTH)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Dataset — in-memory cache (mirrors train.py)
+#  Dataset  (mirrors train.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class RagaDataset(Dataset):
     """
-    Loads raw audio and extracts log-mel spectrograms on first access, then
-    caches the result in memory.
+    Loads each audio file once, splits into non-overlapping 30-second chunks,
+    and caches all chunks as tensors in memory.
 
     Parameters
     ----------
     df        : pd.DataFrame   rows for one split
     label_map : dict           { raga_name: int_index }
-
-    Returns (per sample)
-    --------------------
-    spectrogram : torch.FloatTensor  shape (1, N_MELS, T)
-    label       : int
     """
 
     def __init__(self, df: pd.DataFrame, label_map: dict):
-        self.df        = df.reset_index(drop=True)
         self.label_map = label_map
-        self._cache    = {}          # track_id  →  (1, N_MELS, T) FloatTensor
+        self._cache    = {}   # track_id → list of (1, N_MELS, T) tensors
+        self._index    = []   # list of (track_id, chunk_idx, label)
+
+        print(f"  [dataset] Loading and splitting {len(df)} audio files …")
+
+        for _, row in df.iterrows():
+            track_id   = row["track_id"]
+            audio_path = os.path.join(AUDIO_ROOT, row["relative_part"])
+            label      = label_map[row["raga"]]
+            chunks     = self._load_and_split(track_id, audio_path)
+
+            for chunk_idx in range(len(chunks)):
+                self._index.append((track_id, chunk_idx, label))
+
+        print(f"  [dataset] Total chunks (samples): {len(self._index)}\n")
+
+    def _load_and_split(self, track_id, audio_path):
+        if track_id in self._cache:
+            return self._cache[track_id]
+
+        if not os.path.exists(audio_path):
+            print(f"  [WARN] File not found: {audio_path}")
+            self._cache[track_id] = []
+            return []
+
+        try:
+            waveform = load_audio(audio_path)
+        except Exception as exc:
+            print(f"  [WARN] Could not load {audio_path}: {exc}")
+            self._cache[track_id] = []
+            return []
+
+        n_chunks = len(waveform) // CLIP_SAMPLES
+        if n_chunks == 0:
+            n_chunks = 1
+
+        tensors = []
+        for i in range(n_chunks):
+            start = i * CLIP_SAMPLES
+            chunk = waveform[start : start + CLIP_SAMPLES]
+
+            if len(chunk) < CLIP_SAMPLES:
+                chunk = np.pad(chunk, (0, CLIP_SAMPLES - len(chunk)))
+
+            log_mel = compute_logmel(chunk)
+            log_mel = pad_or_crop_logmel(log_mel, FIXED_FRAMES)
+            tensor  = torch.tensor(log_mel, dtype=torch.float32).unsqueeze(0)
+            tensors.append(tensor)
+
+        self._cache[track_id] = tensors
+        return tensors
 
     def __len__(self):
-        return len(self.df)
+        return len(self._index)
 
     def __getitem__(self, idx):
-        row      = self.df.iloc[idx]
-        track_id = row["track_id"]
-
-        if track_id not in self._cache:
-            audio_path = os.path.join(AUDIO_ROOT, row["relative_part"])
-            log_mel    = extract_logmel(audio_path)
-            self._cache[track_id] = torch.tensor(
-                log_mel, dtype=torch.float32
-            ).unsqueeze(0)
-
-        tensor = self._cache[track_id]
-        label  = self.label_map[row["raga"]]
-        return tensor, label
+        track_id, chunk_idx, label = self._index[idx]
+        return self._cache[track_id][chunk_idx], label
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,14 +141,13 @@ class RagaDataset(Dataset):
 
 def load_model(checkpoint_path: str, device: torch.device):
     """
-    Instantiate BaselineCNN and restore weights from a checkpoint saved by
-    train.py.
+    Restore BaselineCNN weights from a checkpoint saved by train.py.
 
     Returns
     -------
     model     : BaselineCNN   in eval mode
-    label_map : dict          { raga_name: int_index }
-    meta      : dict          epoch / val_accuracy / train_loss
+    label_map : dict
+    meta      : dict
     """
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(
@@ -118,8 +156,7 @@ def load_model(checkpoint_path: str, device: torch.device):
         )
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
-
-    model = BaselineCNN(num_classes=config.NUM_CLASSES).to(device)
+    model      = BaselineCNN(num_classes=config.NUM_CLASSES).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -143,21 +180,27 @@ def load_model(checkpoint_path: str, device: torch.device):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def evaluate_model(
-    model  : torch.nn.Module,
-    loader : DataLoader,
-    device : torch.device,
+    model     : torch.nn.Module,
+    loader    : DataLoader,
+    dataset   : RagaDataset,
+    device    : torch.device,
 ):
     """
-    Run inference over the full DataLoader.
+    Run chunk-level inference, then aggregate per-file predictions via
+    majority vote.
 
     Returns
     -------
-    true_labels : list[int]
-    pred_labels : list[int]
+    true_labels : list[int]   one per audio file
+    pred_labels : list[int]   majority-vote prediction per audio file
     """
     model.eval()
-    true_labels = []
-    pred_labels = []
+
+    # Collect chunk-level predictions keyed by track_id
+    # chunk_preds[track_id] = list of predicted class indices
+    # chunk_true[track_id]  = true label (same for all chunks of a file)
+    chunk_preds = {}
+    chunk_true  = {}
 
     n_batches = len(loader)
 
@@ -165,10 +208,31 @@ def evaluate_model(
         for batch_idx, (spectrograms, labels) in enumerate(loader, start=1):
             spectrograms = spectrograms.to(device)
             preds        = model(spectrograms).argmax(dim=1).cpu().tolist()
-            pred_labels.extend(preds)
-            true_labels.extend(labels.tolist())
+
+            # Map back to track_id using the dataset index
+            batch_start = (batch_idx - 1) * loader.batch_size
+            for i, (pred, label) in enumerate(zip(preds, labels.tolist())):
+                global_idx        = batch_start + i
+                if global_idx >= len(dataset._index):
+                    break
+                track_id, _, _    = dataset._index[global_idx]
+
+                if track_id not in chunk_preds:
+                    chunk_preds[track_id] = []
+                    chunk_true[track_id]  = label
+
+                chunk_preds[track_id].append(pred)
 
             print(f"  batch {batch_idx}/{n_batches}", flush=True)
+
+    # Majority vote per file
+    true_labels = []
+    pred_labels = []
+
+    for track_id, preds in chunk_preds.items():
+        majority = Counter(preds).most_common(1)[0][0]
+        pred_labels.append(majority)
+        true_labels.append(chunk_true[track_id])
 
     return true_labels, pred_labels
 
@@ -186,20 +250,19 @@ def compute_metrics(true_labels: list, pred_labels: list, class_names: list):
     -------
     metrics : dict
     report  : str
-    cm      : ndarray  (n_classes × n_classes)
+    cm      : ndarray
     """
     n         = len(class_names)
     idx_range = list(range(n))
 
     accuracy     = accuracy_score(true_labels, pred_labels)
-    macro_f1     = f1_score(true_labels, pred_labels, average="macro",
-                            zero_division=0)
+    macro_f1     = f1_score(true_labels, pred_labels, average="macro",   zero_division=0)
     per_class_f1 = f1_score(true_labels, pred_labels, average=None,
                             labels=idx_range, zero_division=0)
     cm     = confusion_matrix(true_labels, pred_labels, labels=idx_range)
     report = classification_report(
-        true_labels, pred_labels, target_names=class_names,
-        labels=idx_range, zero_division=0
+        true_labels, pred_labels,
+        target_names=class_names, labels=idx_range, zero_division=0
     )
 
     metrics = {
@@ -258,9 +321,8 @@ def plot_confusion_matrix(cm: np.ndarray, class_names: list, save_path: str) -> 
 # ─────────────────────────────────────────────────────────────────────────────
 
 def save_results(metrics: dict, report: str) -> None:
-    """Write metrics JSON and classification report to results/."""
     with open(METRICS_FILE, "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(metrics, f, indent=2, ensure_ascii=False)
     print(f"[evaluate] Metrics JSON          → {METRICS_FILE}")
 
     with open(REPORT_FILE, "w", encoding="utf-8") as f:
@@ -278,12 +340,12 @@ def main() -> None:
     print("=" * 55)
     print("  Carnatic Raga Classifier — Evaluation")
     print("=" * 55)
-    print(f"  Device : {device}\n")
+    print(f"  Device        : {device}")
+    print(f"  Clip duration : {config.CLIP_DURATION}s\n")
 
-    # ── Load model + label map ────────────────────────────────────────────────
+    # ── Load model ────────────────────────────────────────────────────────────
     model, label_map, _ = load_model(CHECKPOINT, device)
 
-    # class_names ordered by integer index so sklearn labels align
     class_names = [
         raga for raga, _ in sorted(label_map.items(), key=lambda x: x[1])
     ]
@@ -293,23 +355,28 @@ def main() -> None:
     df["split"] = df["split"].str.strip().str.lower()
     test_df = df[df["split"] == "test"].reset_index(drop=True)
 
-    print(f"[data]     Test rows : {len(test_df)}\n")
+    print(f"[data] Test files : {len(test_df)}\n")
+    print("[data] Building test dataset …")
+    test_dataset = RagaDataset(test_df, label_map)
 
     test_loader = DataLoader(
-        RagaDataset(test_df, label_map),
+        test_dataset,
         batch_size  = config.BATCH_SIZE,
         shuffle     = False,
         num_workers = 0,
     )
 
-    # ── Inference ─────────────────────────────────────────────────────────────
-    print("[evaluate] Running inference …")
-    true_labels, pred_labels = evaluate_model(model, test_loader, device)
+    # ── Inference with majority vote ──────────────────────────────────────────
+    print("[evaluate] Running chunk-level inference with majority vote …")
+    true_labels, pred_labels = evaluate_model(model, test_loader, test_dataset, device)
+
+    print(f"\n[evaluate] Evaluated {len(true_labels)} files "
+          f"({len(test_dataset)} chunks total)\n")
 
     # ── Metrics ───────────────────────────────────────────────────────────────
     metrics, report, cm = compute_metrics(true_labels, pred_labels, class_names)
 
-    print(f"\n  Accuracy  : {metrics['accuracy'] * 100:.2f}%")
+    print(f"  Accuracy  : {metrics['accuracy'] * 100:.2f}%")
     print(f"  Macro F1  : {metrics['macro_f1']:.4f}")
     print("\nClassification Report:\n")
     print(report)

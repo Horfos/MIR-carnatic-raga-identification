@@ -1,0 +1,26 @@
+{
+  "accuracy": 0.076923,
+  "macro_f1": 0.03468,
+  "per_class_f1": {
+    "Bhairavi": 0.285714,
+    "Bilahari": 0.0,
+    "Bēgaḍa": 0.0,
+    "Dhanyāsi": 0.0,
+    "Harikāmbhōji": 0.25,
+    "Kalyāṇi": 0.0,
+    "Karaharapriya": 0.0,
+    "Kāmavardani": 0.0,
+    "Kāpi": 0.0,
+    "Kāṁbhōji": 0.0,
+    "Madhyamāvati": 0.0,
+    "Māyāmāḷavagauḷa": 0.0,
+    "Mōhanaṁ": 0.0,
+    "Nāṭakurinji": 0.0,
+    "Rītigauḷa": 0.0,
+    "Sahānā": 0.0,
+    "Tōḍi": 0.157895,
+    "Ānandabhairavi": 0.0,
+    "Śankarābharaṇaṁ": 0.0,
+    "Ṣanmukhapriya": 0.0
+  }
+}

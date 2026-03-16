@@ -1,8 +1,17 @@
 """
 train.py — Carnatic Raga CNN Classifier
 ========================================
-RagaDataset computes log-mel spectrograms on first access and caches them
-in memory.  Epoch 1 pays the librosa cost once; epochs 2-30 are fast.
+Each audio file is loaded once, split into non-overlapping 30-second chunks
+in memory, and each chunk is treated as an independent training sample.
+No files are written to disk.
+
+Pipeline per audio file
+-----------------------
+  load_audio(path)  →  full waveform
+  split into N × (SAMPLE_RATE * CLIP_DURATION) samples
+  compute_logmel(chunk)  →  (128, T)
+  pad_or_crop_logmel     →  (128, fixed_T)
+  cache all chunks in memory as (1, 128, fixed_T) tensors
 
 Usage:
     python src/train.py
@@ -13,6 +22,7 @@ import sys
 import json
 import time
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -23,7 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import config
 from env_config import AUDIO_ROOT
-from src.features import extract_logmel
+from src.features import load_audio, compute_logmel, pad_or_crop_logmel
 from src.models import BaselineCNN
 
 # ── output dirs ───────────────────────────────────────────────────────────────
@@ -33,49 +43,101 @@ TRAIN_LOG  = os.path.join(config.LOG_DIR, "train_log.json")
 os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(config.LOG_DIR,        exist_ok=True)
 
+# ── clip config ───────────────────────────────────────────────────────────────
+CLIP_SAMPLES  = config.SAMPLE_RATE * config.CLIP_DURATION   # samples per 30-sec chunk
+FIXED_FRAMES  = int(config.CLIP_DURATION * config.SAMPLE_RATE / config.HOP_LENGTH)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Dataset — in-memory cache
+#  Dataset
 # ─────────────────────────────────────────────────────────────────────────────
 
 class RagaDataset(Dataset):
     """
-    Loads raw audio and extracts log-mel spectrograms on first access, then
-    caches the result in memory.  Subsequent epochs reuse the cache, so
-    librosa is only called once per track across the entire training run.
+    Loads each audio file once, splits it into non-overlapping 30-second
+    chunks in memory, and caches all chunks as tensors.
+
+    The index is a flat list of (track_id, chunk_index) pairs, so each chunk
+    is treated as an independent sample by the DataLoader.
 
     Parameters
     ----------
-    df        : pd.DataFrame   rows for one split (train or val)
+    df        : pd.DataFrame   rows for one split
     label_map : dict           { raga_name: int_index }
-
-    Returns (per sample)
-    --------------------
-    spectrogram : torch.FloatTensor  shape (1, N_MELS, T)
-    label       : int
     """
 
     def __init__(self, df: pd.DataFrame, label_map: dict):
-        self.df        = df.reset_index(drop=True)
         self.label_map = label_map
-        self._cache    = {}          # track_id  →  (1, N_MELS, T) FloatTensor
+        self._cache    = {}   # track_id → list of (1, N_MELS, T) tensors
+
+        # Build flat index: list of (track_id, chunk_idx, label)
+        self._index = []
+
+        print(f"  [dataset] Loading and splitting {len(df)} audio files …")
+
+        for _, row in df.iterrows():
+            track_id   = row["track_id"]
+            audio_path = os.path.join(AUDIO_ROOT, row["relative_part"])
+            label      = label_map[row["raga"]]
+
+            chunks = self._load_and_split(track_id, audio_path)
+
+            for chunk_idx in range(len(chunks)):
+                self._index.append((track_id, chunk_idx, label))
+
+        print(f"  [dataset] Total chunks (samples): {len(self._index)}\n")
+
+    def _load_and_split(self, track_id: str, audio_path: str):
+        """
+        Load full waveform, split into 30-sec chunks, compute and cache
+        log-mel tensors.  Returns the list of tensors for this track.
+        """
+        if track_id in self._cache:
+            return self._cache[track_id]
+
+        if not os.path.exists(audio_path):
+            print(f"  [WARN] File not found, skipping: {audio_path}")
+            self._cache[track_id] = []
+            return []
+
+        try:
+            waveform = load_audio(audio_path)        # full waveform, shape (N,)
+        except Exception as exc:
+            print(f"  [WARN] Could not load {audio_path}: {exc}")
+            self._cache[track_id] = []
+            return []
+
+        # Split into non-overlapping CLIP_SAMPLES-length chunks
+        # Discard the final partial chunk if shorter than CLIP_SAMPLES
+        n_chunks = len(waveform) // CLIP_SAMPLES
+        if n_chunks == 0:
+            # File shorter than one clip — pad to full clip length
+            n_chunks = 1
+
+        tensors = []
+        for i in range(n_chunks):
+            start = i * CLIP_SAMPLES
+            end   = start + CLIP_SAMPLES
+            chunk = waveform[start:end]
+
+            # Pad if this chunk is shorter than CLIP_SAMPLES
+            if len(chunk) < CLIP_SAMPLES:
+                chunk = np.pad(chunk, (0, CLIP_SAMPLES - len(chunk)))
+
+            log_mel = compute_logmel(chunk)                          # (N_MELS, T)
+            log_mel = pad_or_crop_logmel(log_mel, FIXED_FRAMES)     # (N_MELS, fixed_T)
+            tensor  = torch.tensor(log_mel, dtype=torch.float32).unsqueeze(0)  # (1, N_MELS, T)
+            tensors.append(tensor)
+
+        self._cache[track_id] = tensors
+        return tensors
 
     def __len__(self):
-        return len(self.df)
+        return len(self._index)
 
     def __getitem__(self, idx):
-        row      = self.df.iloc[idx]
-        track_id = row["track_id"]
-
-        if track_id not in self._cache:
-            audio_path = os.path.join(AUDIO_ROOT, row["relative_part"])
-            log_mel    = extract_logmel(audio_path)          # (N_MELS, T)
-            self._cache[track_id] = torch.tensor(
-                log_mel, dtype=torch.float32
-            ).unsqueeze(0)                                   # (1, N_MELS, T)
-
-        tensor = self._cache[track_id]
-        label  = self.label_map[row["raga"]]
+        track_id, chunk_idx, label = self._index[idx]
+        tensor = self._cache[track_id][chunk_idx]
         return tensor, label
 
 
@@ -93,7 +155,7 @@ def train_one_epoch(
 ) -> float:
     """
     One full pass over the training DataLoader.
-    Prints a progress line after every batch so you know it's alive.
+    Prints a progress line after every batch.
 
     Returns
     -------
@@ -167,13 +229,14 @@ def train_model() -> None:
     print(f"  Batch size    : {config.BATCH_SIZE}")
     print(f"  Learning rate : {config.LEARNING_RATE}")
     print(f"  Num classes   : {config.NUM_CLASSES}")
+    print(f"  Clip duration : {config.CLIP_DURATION}s")
     print("=" * 55 + "\n")
 
     # ── Load CSV ──────────────────────────────────────────────────────────────
     df = pd.read_csv(config.CSV_PATH)
     df["split"] = df["split"].str.strip().str.lower()
 
-    # ── Label map (sorted → reproducible) ────────────────────────────────────
+    # ── Label map ─────────────────────────────────────────────────────────────
     all_ragas = sorted(df["raga"].unique())
     assert len(all_ragas) == config.NUM_CLASSES, (
         f"Found {len(all_ragas)} unique ragas but config.NUM_CLASSES={config.NUM_CLASSES}"
@@ -184,20 +247,28 @@ def train_model() -> None:
     train_df = df[df["split"] == "train"].reset_index(drop=True)
     val_df   = df[df["split"] == "val"].reset_index(drop=True)
 
-    print(f"[data] Train rows : {len(train_df)}")
-    print(f"[data] Val   rows : {len(val_df)}")
-    print(f"\n[cache] Epoch 1 will extract all spectrograms via librosa.")
-    print(f"[cache] Epochs 2-{config.NUM_EPOCHS} will use the in-memory cache.\n")
+    print(f"[data] Train files : {len(train_df)}")
+    print(f"[data] Val   files : {len(val_df)}\n")
+
+    # Datasets — all audio is loaded and split here, before training starts
+    print("[data] Building train dataset …")
+    train_dataset = RagaDataset(train_df, label_map)
+
+    print("[data] Building val dataset …")
+    val_dataset   = RagaDataset(val_df,   label_map)
+
+    print(f"[data] Train chunks : {len(train_dataset)}")
+    print(f"[data] Val   chunks : {len(val_dataset)}\n")
 
     train_loader = DataLoader(
-        RagaDataset(train_df, label_map),
+        train_dataset,
         batch_size  = config.BATCH_SIZE,
         shuffle     = True,
         num_workers = 0,
         pin_memory  = (device.type == "cuda"),
     )
     val_loader = DataLoader(
-        RagaDataset(val_df, label_map),
+        val_dataset,
         batch_size  = config.BATCH_SIZE,
         shuffle     = False,
         num_workers = 0,
