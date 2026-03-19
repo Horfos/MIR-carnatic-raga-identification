@@ -1,0 +1,26 @@
+                 precision    recall  f1-score   support
+
+       Bhairavi       0.00      0.00      0.00         2
+       Bilahari       0.00      0.00      0.00         1
+         Bēgaḍa       0.00      0.00      0.00         2
+       Dhanyāsi       0.00      0.00      0.00         2
+   Harikāmbhōji       0.00      0.00      0.00         1
+        Kalyāṇi       0.00      0.00      0.00         1
+  Karaharapriya       0.00      0.00      0.00         2
+    Kāmavardani       0.00      0.00      0.00         1
+           Kāpi       0.00      0.00      0.00         0
+       Kāṁbhōji       0.04      1.00      0.07         1
+   Madhyamāvati       0.00      0.00      0.00         1
+Māyāmāḷavagauḷa       0.00      0.00      0.00         2
+        Mōhanaṁ       0.00      0.00      0.00         0
+    Nāṭakurinji       0.00      0.00      0.00         2
+      Rītigauḷa       0.00      0.00      0.00         1
+         Sahānā       0.00      0.00      0.00         1
+           Tōḍi       0.00      0.00      0.00         2
+ Ānandabhairavi       0.00      0.00      0.00         1
+Śankarābharaṇaṁ       0.00      0.00      0.00         2
+  Ṣanmukhapriya       0.00      0.00      0.00         2
+
+       accuracy                           0.04        27
+      macro avg       0.00      0.05      0.00        27
+   weighted avg       0.00      0.04      0.00        27
