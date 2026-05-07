@@ -1,4 +1,11 @@
 data/raw_audio/
+data/interim/
+data/processed/
+data/metadata/pitch.csv
+
+
+src/huggingface_evaluation/
+
 __pycache__/
 *.pyc
 .ipynb_checkpoints/

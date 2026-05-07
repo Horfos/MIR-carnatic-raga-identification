@@ -31,14 +31,15 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from feature_extraction.pitch    import extract_pitch
-from feature_extraction.energy   import extract_energy
-from feature_extraction.harmonic import extract_harmonic
-from feature_extraction.tonic    import extract_tonic
+from pitch    import extract_pitch
+from energy   import extract_energy
+from harmonic import extract_harmonic
+from tonic    import extract_tonic
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-REPO_ROOT    = Path(r"C:\Users\priya\OneDrive\Documents\GitHub\MIR-carnatic-raga-identification")
+REPO_ROOT    = Path(r"C:/Users/Sragv/MIR Carnatic raga identification")
+AUDIO_ROOT   = REPO_ROOT / "data" / "raw_audio"
 METADATA_CSV = REPO_ROOT / "data" / "metadata" / "raga_20_dataset_frozen.csv"
 FEATURES_DIR = REPO_ROOT / "features"          # one .npz per clip goes here
 LOG_FILE     = REPO_ROOT / "feature_extraction.log"
@@ -100,7 +101,7 @@ def main() -> None:
 
     meta = pd.read_csv(METADATA_CSV)
 
-    required_cols = {"audio_path"}
+    required_cols = {"relative_part"}
     missing_cols  = required_cols - set(meta.columns)
     if missing_cols:
         raise ValueError(f"Metadata CSV is missing columns: {missing_cols}")
@@ -111,8 +112,8 @@ def main() -> None:
     failed_clips   = []
 
     for idx, row in tqdm(meta.iterrows(), total=len(meta), unit="clip"):
-        rel_audio = row["audio_path"]
-        abs_audio = REPO_ROOT / rel_audio
+        rel_audio = row["relative_part"]
+        abs_audio = AUDIO_ROOT / rel_audio
         clip      = clip_name_from_path(rel_audio)
         npz_rel   = f"features/{clip}.npz"
         npz_abs   = REPO_ROOT / npz_rel
