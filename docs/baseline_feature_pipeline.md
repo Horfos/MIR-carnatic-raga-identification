@@ -1,6 +1,35 @@
 ## Stage 1: Audio → NPZ Feature Extraction (Priyanshu)
 
-PRIYANSHU WRITE HERE
+### Overview
+
+Features are extracted from each audio clip at a consistent *10 ms frame resolution* and saved as one compressed .npz file per clip under features/. The metadata CSV is updated in-place with a feature_path column pointing to each clip's .npz.
+
+### Feature Set
+
+Each .npz file contains the following arrays:
+
+| Key | Shape | Description |
+|-----|-------|-------------|
+| pitch | (T,) | F0 in Hz per frame; 0.0 for unvoiced frames |
+| velocity | (T,) | Pitch derivative in Hz/s; 0.0 at unvoiced boundaries |
+| energy | (T,) | RMS energy per frame (linear scale) |
+| harmonic | (T, 10) | Spectral energy at Sa harmonics (cols 0–4) and Pa harmonics (cols 5–9) |
+| tonic | scalar | Estimated Sa frequency in Hz for the clip |
+
+All time-series features share the same length T (trimmed to the shortest across all features for a given clip).
+
+### Extraction Methods
+
+*Pitch (F0)* — Extracted using Praat's autocorrelation method via praat-parselmouth. Praat slides a copy of the signal over itself every 10 ms and finds the delay at which the signal best matches itself; the inverse of that delay gives the fundamental frequency. Unvoiced and silent frames are returned as 0.0.
+
+*Pitch Velocity* — Computed directly from the pitch array as a frame-to-frame finite difference scaled to Hz/s: (pitch[i] − pitch[i−1]) / 0.01. Set to 0.0 wherever either the current or previous frame is unvoiced, preventing spurious spikes at voiced/unvoiced boundaries.
+
+*Energy* — RMS energy computed by librosa over a 25 ms window centred on each 10 ms frame: sqrt(mean(samples²)). Captures loudness dynamics across the performance.
+
+*Harmonic* — Short-Time Fourier Transform (STFT) computed by librosa at 10 ms hops. The magnitude spectrum is sampled at the harmonic series of Sa (tonic × 1, 2, 3, 4, 5) and Pa (tonic × 1.5, 3.0, 4.5, 6.0, 7.5), giving 10 amplitude values per frame. Tonic must be estimated before this step.
+
+*Tonic* — Estimated per clip in three stages: (1) pYIN F0 tracking collects all voiced F0 values across the clip; (2) all values are folded into a single octave using cent-domain modulo arithmetic and a 120-bin histogram identifies the most consistently sung pitch class (Sa); (3) the winning bin is shifted to the octave nearest to the median voiced F0, yielding a concrete Hz value. Returned as a scalar.
+
 
 ## Stage 2: NPZ → Processed Baseline Features
 
@@ -121,3 +150,30 @@ Final baseline feature dimensionality:
 * Gamaka structure is only indirectly represented through velocity statistics
 * The processed per-clip representation enables future feature additions without recomputing raw audio features
 
+# Baseline Results
+
+Final feature vector dimension: 36
+
+## Models Evaluated
+
+| Model               | Test Accuracy |
+| ------------------- | ------------- |
+| Logistic Regression | 60.0%         |
+| CNN Baseline        | 72.5%         |
+| Random Forest       | 75.0%         |
+
+## Observations
+
+* The baseline performs strongly despite using only global pitch-distribution-based features.
+* Confusions are concentrated among musically related ragas.
+* Allied ragas such as Harikāmbhōji, Kāṁbhōji, and Karaharapriya remain difficult to separate.
+* Current features do not explicitly model melodic movement, phrase structure, or gamakas.
+
+## Next Direction
+
+Planned next steps include:
+
+* transition/movement-based melodic features
+* arohana-avarohana-inspired representations
+* temporal modeling
+* segment-wise analysis using shorter audio excerpts
